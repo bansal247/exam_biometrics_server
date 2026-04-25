@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Panel – Exam Biometrics</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ── Login Screen ──────────────────────────────────────────────── -->
+  <div id="login-screen" class="login-container">
+    <div class="login-card">
+      <h1>🛡️ Exam Biometrics</h1>
+      <p class="subtitle">Admin Panel</p>
+      <div id="login-error" class="error hidden"></div>
+      <input type="text" id="login-id" placeholder="Admin ID">
+      <input type="password" id="login-pass" placeholder="Password">
+      <button onclick="doLogin()">Sign In</button>
+    </div>
+  </div>
+
+  <!-- ── Main App ──────────────────────────────────────────────────── -->
+  <div id="app" class="hidden">
+    <nav id="sidebar">
+      <div class="sidebar-header">🛡️ Admin</div>
+      <a onclick="showPage('centers')" class="nav-link active" data-page="centers">Centers & Shifts</a>
+      <a onclick="showPage('create-exam')" class="nav-link" data-page="create-exam">Create Exam</a>
+      <a onclick="showPage('edit-exam')" class="nav-link" data-page="edit-exam">Edit Exam</a>
+      <a onclick="showPage('candidates')" class="nav-link" data-page="candidates">Add Candidates</a>
+      <a onclick="showPage('dashboard')" class="nav-link" data-page="dashboard">Dashboard</a>
+      <a onclick="showPage('logs')" class="nav-link" data-page="logs">Logs</a>
+      <a onclick="doLogout()" class="nav-link logout">Logout</a>
+    </nav>
+
+    <button id="menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <main id="content">
+
+      <!-- Centers & Shifts -->
+      <section id="page-centers" class="page">
+        <h2>Centers & Shifts</h2>
+        <div class="grid-2">
+          <div class="card">
+            <h3>Add Center</h3>
+            <input id="c-code" placeholder="Code *">
+            <input id="c-name" placeholder="Name">
+            <input id="c-addr" placeholder="Address">
+            <input id="c-supname" placeholder="Supervisor Name (optional)">
+            <input id="c-vendor" placeholder="Vendor Name (optional)">
+            <button onclick="createCenter()">Create Center</button>
+          </div>
+          <div class="card">
+            <h3>Add Shift</h3>
+            <input id="s-code" placeholder="Shift Code (optional)">
+            <input id="s-date" type="date">
+            <input id="s-time" type="time">
+            <button onclick="createShift()">Create Shift</button>
+          </div>
+        </div>
+        <div id="msg-centers" class="msg hidden"></div>
+        <div class="grid-2" style="margin-top:1.5rem">
+          <div class="card">
+            <h3>Centers</h3>
+            <table><thead><tr><th>Code</th><th>Name</th><th>Supervisor</th><th>Vendor</th></tr></thead><tbody id="center-list"></tbody></table>
+          </div>
+          <div class="card">
+            <h3>Shifts</h3>
+            <table><thead><tr><th>Code</th><th>Date</th><th>Time</th></tr></thead><tbody id="shift-list"></tbody></table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Create Exam -->
+      <section id="page-create-exam" class="page hidden">
+        <h2>Create Exam</h2>
+        <div class="card">
+          <input id="ex-name" placeholder="Exam Name *">
+          <div class="row">
+            <select id="ex-type"><option value="capture">Capture</option><option value="match">Match</option></select>
+            <input id="ex-qr" placeholder="QR Regex (optional)">
+          </div>
+          <div class="row">
+            <label>Supervisors: <input id="ex-nsup" type="number" min="1" max="10" value="1" onchange="renderUserFields()"></label>
+            <label>Operators: <input id="ex-nop" type="number" min="1" max="10" value="1" onchange="renderUserFields()"></label>
+          </div>
+          <div id="sup-fields"></div>
+          <div id="op-fields"></div>
+          <button onclick="createExam()">Create Exam</button>
+          <div id="msg-exam" class="msg hidden"></div>
+          <pre id="exam-result" class="hidden"></pre>
+        </div>
+      </section>
+
+      <!-- Edit Exam -->
+      <section id="page-edit-exam" class="page hidden">
+        <h2>Edit Exams</h2>
+        <div id="edit-exam-list"></div>
+      </section>
+
+      <!-- Add Candidates -->
+      <section id="page-candidates" class="page hidden">
+        <h2>Add Candidates</h2>
+        <div class="card">
+          <div class="row">
+            <select id="cand-exam" onchange="onCandExamChange()"><option value="">Select Exam</option></select>
+            <select id="cand-center"><option value="">Center (from file)</option></select>
+            <select id="cand-shift"><option value="">Shift (from file)</option></select>
+          </div>
+          <div id="fp-folder-wrap" class="hidden" style="margin-top:.75rem">
+            <label style="font-size:.85rem;color:var(--muted);display:block">Fingerprint images folder — filenames matched against <em>fingerprint_filename</em> column</label>
+            <input type="file" id="fp-folder" webkitdirectory accept="image/*,.bmp" style="margin-bottom:.25rem">
+            <div id="fp-count" style="font-size:.8rem;color:var(--muted);margin-bottom:.5rem"></div>
+          </div>
+          <div id="iris-folder-wrap" class="hidden">
+            <label style="font-size:.85rem;color:var(--muted);display:block">Iris images folder — filenames matched against <em>iris_filename</em> column</label>
+            <input type="file" id="iris-folder" webkitdirectory accept="image/*,.bmp" style="margin-bottom:.25rem">
+            <div id="iris-count" style="font-size:.8rem;color:var(--muted);margin-bottom:.5rem"></div>
+          </div>
+          <label style="font-size:.85rem;color:var(--muted);margin-top:.75rem;display:block">
+            (Optional) Select photo folder — filenames matched against the <em>photo_filename</em> column
+          </label>
+          <input type="file" id="photo-folder" webkitdirectory accept="image/*" style="margin-bottom:.25rem">
+          <div id="photo-count" style="font-size:.8rem;color:var(--muted);margin-bottom:.75rem"></div>
+          <label style="font-size:.85rem;color:var(--muted);display:block">
+            Upload candidate spreadsheet (.csv / .xlsx / .xls)
+          </label>
+          <input type="file" id="cand-file" accept=".csv,.xlsx,.xls">
+          <div id="cand-mapping" class="hidden"></div>
+          <button id="cand-upload-btn" class="hidden" onclick="uploadCandidates()">Upload Candidates</button>
+          <div id="msg-cand" class="msg hidden"></div>
+        </div>
+      </section>
+
+      <!-- Dashboard: All Centers + Attendance + Matching + Duplicates -->
+      <section id="page-dashboard" class="page hidden">
+        <h2>Dashboard</h2>
+        <div class="card">
+          <div class="row">
+            <select id="dash-exam" onchange="onDashExamChange()"><option value="">Select Exam</option></select>
+          </div>
+          <div class="tabs" style="margin-top:.75rem">
+            <button onclick="switchDashTab('all-centers')" class="tab active" data-tab="all-centers">All Centers</button>
+            <button onclick="switchDashTab('matching')" class="tab" data-tab="matching">Match Status</button>
+            <button onclick="switchDashTab('duplicates')" class="tab" data-tab="duplicates">Duplicates</button>
+          </div>
+        </div>
+
+        <!-- All Centers tab -->
+        <div id="dash-tab-all-centers">
+          <div class="card">
+            <div class="row" style="align-items:center;gap:1rem;flex-wrap:wrap">
+              <select id="centers-shift-filter" onchange="loadCentersSummary()" style="flex:1;min-width:180px"><option value="">All Shifts</option></select>
+              <label style="display:flex;align-items:center;gap:.5rem;white-space:nowrap">
+                <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()"> Auto-refresh (30s)
+              </label>
+            </div>
+          </div>
+          <div id="ac-stats" class="grid-3 hidden">
+            <div class="stat-card"><span id="ac-total" class="stat-num">0</span><span>Total</span></div>
+            <div class="stat-card present"><span id="ac-present" class="stat-num">0</span><span>Present</span></div>
+            <div class="stat-card absent"><span id="ac-absent" class="stat-num">0</span><span>Absent</span></div>
+          </div>
+          <div id="ac-charts" class="hidden" style="display:flex;flex-wrap:wrap;gap:1rem;margin:.75rem 0">
+            <div class="card" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Attendance</strong><canvas id="ac-chart-att" height="160"></canvas></div>
+            <div class="card" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Photo Match</strong><canvas id="ac-chart-photo" height="160"></canvas></div>
+            <div id="ac-chart-fp-wrap" class="card hidden" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Fingerprint Match</strong><canvas id="ac-chart-fp" height="160"></canvas></div>
+            <div id="ac-chart-iris-wrap" class="card hidden" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Iris Match</strong><canvas id="ac-chart-iris" height="160"></canvas></div>
+          </div>
+          <div class="card" style="overflow-x:auto">
+            <table id="ac-table"><thead id="ac-thead"><tr>
+              <th>Center</th><th>Code</th><th>Shift</th><th>Total</th>
+              <th>Present</th><th>Absent</th><th>Matched</th><th>Mismatched</th>
+              <th>Duplicates</th><th>Devices</th><th>Supervisor</th><th>Vendor</th>
+            </tr></thead><tbody id="centers-summary-body"></tbody><tfoot id="ac-tfoot"></tfoot></table>
+          </div>
+        </div>
+
+        <!-- Matching tab -->
+        <div id="dash-tab-matching" class="hidden">
+          <div class="card">
+            <div class="row">
+              <select id="match-center" onchange="loadDashTab()"><option value="">— Select Center —</option></select>
+              <select id="match-shift" onchange="loadDashTab()"><option value="">— Select Shift —</option></select>
+            </div>
+          </div>
+          <div id="match-prompt" class="card" style="color:var(--muted);text-align:center">Select a center and shift to view match status data.</div>
+          <div id="match-content" class="hidden">
+            <div class="grid-3">
+              <div class="stat-card present"><span id="match-matched" class="stat-num">0</span><span>Matched</span></div>
+              <div class="stat-card absent"><span id="match-failed" class="stat-num">0</span><span>Failed</span></div>
+              <div class="stat-card pending"><span id="match-pending" class="stat-num">0</span><span>Pending</span></div>
+            </div>
+            <div class="card"><canvas id="match-chart" height="200"></canvas></div>
+            <div class="row">
+              <button onclick="downloadMatching('pdf')" class="btn-red">⬇ PDF</button>
+            </div>
+            <div class="card"><table><thead><tr>
+              <th>No</th><th>Name</th><th>Attended</th><th>Ref Photo</th><th>Captured</th>
+              <th>Photo</th><th>Fingerprint</th><th>Iris</th><th>Center</th><th>Shift</th>
+            </tr></thead><tbody id="match-body"></tbody></table></div>
+          </div>
+        </div>
+
+        <!-- Duplicates tab -->
+        <div id="dash-tab-duplicates" class="hidden">
+          <div class="card">
+            <div class="row">
+              <select id="dup-center" onchange="loadDashTab()"><option value="">— Select Center —</option></select>
+              <select id="dup-shift" onchange="loadDashTab()"><option value="">— Select Shift —</option></select>
+            </div>
+          </div>
+          <div id="dup-prompt" class="card" style="color:var(--muted);text-align:center">Select a center and shift to view duplicates.</div>
+          <div id="dup-content">
+            <p id="dup-empty" class="hidden" style="color:var(--muted)">No duplicates found.</p>
+            <div id="dup-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logs -->
+      <section id="page-logs" class="page hidden">
+        <h2>Logs</h2>
+        <div class="tabs">
+          <button onclick="loadLogs('auth')" class="tab active" data-tab="auth">Auth</button>
+          <button onclick="loadLogs('admin')" class="tab" data-tab="admin">Admin</button>
+          <button onclick="loadLogs('supervisor')" class="tab" data-tab="supervisor">Supervisor</button>
+          <button onclick="loadLogs('operator')" class="tab" data-tab="operator">Operator</button>
+        </div>
+        <div class="card"><table><thead id="log-head"></thead><tbody id="log-body"></tbody></table></div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.15.1/dist/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

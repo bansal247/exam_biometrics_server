@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Supervisor Panel – Exam Biometrics</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Login -->
+  <div id="login-screen" class="login-container">
+    <div class="login-card">
+      <h1>🔍 Exam Biometrics</h1>
+      <p class="subtitle">Supervisor Panel</p>
+      <div id="login-error" class="error hidden"></div>
+      <input type="text" id="login-phone" placeholder="Phone">
+      <input type="password" id="login-pass" placeholder="Password">
+      <button onclick="doLogin()">Sign In</button>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <nav id="sidebar">
+      <div id="sidebar-exam-name" class="sidebar-header">🔍 Supervisor</div>
+      <a onclick="showPage('dashboard')" class="nav-link active" data-page="dashboard">Dashboard</a>
+      <a onclick="doLogout()" class="nav-link logout">Logout</a>
+    </nav>
+
+    <button id="menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <main id="content">
+
+      <!-- Combined Dashboard -->
+      <section id="page-dashboard" class="page">
+        <h2>Dashboard</h2>
+        <p id="page-exam-name" style="margin:-0.5rem 0 0.75rem;font-size:1rem;font-weight:600;color:var(--primary)"></p>
+        <div class="card">
+          <div class="tabs" style="margin-top:.25rem">
+            <button onclick="switchDashTab('all-centers')" class="tab active" data-tab="all-centers">All Centers</button>
+            <button onclick="switchDashTab('matching')" class="tab" data-tab="matching">Match Status</button>
+            <button onclick="switchDashTab('duplicates')" class="tab" data-tab="duplicates">Duplicates</button>
+          </div>
+        </div>
+
+        <!-- All Centers tab -->
+        <div id="dash-tab-all-centers">
+          <div class="card">
+            <div class="row" style="align-items:center;gap:1rem;flex-wrap:wrap">
+              <select id="centers-shift-filter" onchange="loadCentersSummary()" style="flex:1;min-width:180px"><option value="">All Shifts</option></select>
+              <label style="display:flex;align-items:center;gap:.5rem;white-space:nowrap">
+                <input type="checkbox" id="auto-refresh" onchange="toggleAutoRefresh()"> Auto-refresh (30s)
+              </label>
+            </div>
+          </div>
+          <div id="ac-sup-stats" class="grid-3 hidden">
+            <div class="stat-card"><span id="ac-sup-total" class="stat-num">0</span><span>Total</span></div>
+            <div class="stat-card present"><span id="ac-sup-present" class="stat-num">0</span><span>Present</span></div>
+            <div class="stat-card absent"><span id="ac-sup-absent" class="stat-num">0</span><span>Absent</span></div>
+          </div>
+          <div id="ac-sup-charts" class="hidden" style="display:flex;flex-wrap:wrap;gap:1rem;margin:.75rem 0">
+            <div class="card" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Attendance</strong><canvas id="ac-sup-chart-att" height="160"></canvas></div>
+            <div class="card" style="flex:1;min-width:200px"><strong style="display:block;margin-bottom:.5rem;font-size:.85rem">Photo Match</strong><canvas id="ac-sup-chart-photo" height="160"></canvas></div>
+          </div>
+          <div class="card" style="overflow-x:auto">
+            <table id="ac-sup-table">
+              <thead id="ac-sup-thead"></thead>
+              <tbody id="centers-summary-body"></tbody>
+              <tfoot id="ac-sup-tfoot"></tfoot>
+            </table>
+          </div>
+        </div>
+
+        <!-- Matching tab -->
+        <div id="dash-tab-matching" class="hidden">
+          <div class="card">
+            <div class="row">
+              <select id="match-sup-center" onchange="loadDashTab()"><option value="">— Select Center —</option></select>
+              <select id="match-sup-shift" onchange="loadDashTab()"><option value="">— Select Shift —</option></select>
+            </div>
+          </div>
+          <div id="match-sup-prompt" class="card" style="color:var(--muted);text-align:center">Select a center and shift to view match status data.</div>
+          <div id="match-sup-content" class="hidden">
+            <div class="grid-3">
+              <div class="stat-card present"><span id="match-matched" class="stat-num">0</span><span>Matched</span></div>
+              <div class="stat-card absent"><span id="match-failed" class="stat-num">0</span><span>Failed</span></div>
+              <div class="stat-card pending"><span id="match-pending" class="stat-num">0</span><span>Pending</span></div>
+            </div>
+            <div class="card"><canvas id="match-chart" height="200"></canvas></div>
+            <div class="row">
+              <button onclick="download('matching','pdf')" class="btn-red">⬇ PDF</button>
+            </div>
+            <div class="card"><table><thead id="sup-match-thead"></thead><tbody id="match-body"></tbody></table></div>
+          </div>
+        </div>
+
+        <!-- Duplicates tab -->
+        <div id="dash-tab-duplicates" class="hidden">
+          <div class="card">
+            <div class="row">
+              <select id="dup-sup-center" onchange="loadDashTab()"><option value="">— Select Center —</option></select>
+              <select id="dup-sup-shift" onchange="loadDashTab()"><option value="">— Select Shift —</option></select>
+            </div>
+          </div>
+          <div id="dup-sup-prompt" class="card" style="color:var(--muted);text-align:center">Select a center and shift to view duplicates.</div>
+          <div id="dup-sup-content">
+            <p id="dup-empty" class="hidden" style="color:var(--muted)">No duplicates found.</p>
+            <div id="dup-list"></div>
+          </div>
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

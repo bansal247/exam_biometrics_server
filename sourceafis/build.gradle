@@ -1,0 +1,35 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.exambiometrics'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.machinezoo.sourceafis:sourceafis:3.18.1'
+    implementation 'io.javalin:javalin:6.2.0'
+    implementation 'com.google.code.gson:gson:2.11.0'
+    implementation 'org.slf4j:slf4j-simple:2.0.13'
+}
+
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.exambiometrics.SourceAFISServer'
+    }
+}
+
+shadowJar {
+    archiveBaseName.set('sourceafis-service')
+    archiveClassifier.set('all')
+    archiveVersion.set('')
+}

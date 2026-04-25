@@ -1,0 +1,136 @@
+services:
+  # ── Database ────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: exam_bio_db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── PgBouncer connection pooler ─────────────────────────────────────────
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: exam_bio_pgbouncer
+    restart: unless-stopped
+    environment:
+      DATABASES_HOST: db
+      DATABASES_PORT: "5432"
+      DATABASES_DBNAME: ${DB_NAME}
+      DATABASES_USER: ${DB_USER}
+      DATABASES_PASSWORD: ${DB_PASSWORD}
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: "5000"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "30"
+      PGBOUNCER_AUTH_TYPE: trust
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - internal
+
+  # ── API Server (internal only — accessed via nginx) ────────────────────
+  server:
+    build: ./server
+    container_name: exam_bio_server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      BIOMETRICS_DIR: /biometrics
+    volumes:
+      - biometrics:/biometrics
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      sourceafis:
+        condition: service_started
+    networks:
+      - internal
+
+  # ── Scheduler (cron jobs — separate from API workers) ──────────────────
+  scheduler:
+    build: ./server
+    container_name: exam_bio_scheduler
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      BIOMETRICS_DIR: /biometrics
+    volumes:
+      - biometrics:/biometrics
+    depends_on:
+      pgbouncer:
+        condition: service_started
+      sourceafis:
+        condition: service_started
+    command: ["python", "scheduler.py"]
+    networks:
+      - internal
+
+  # ── SourceAFIS Service (internal only) ─────────────────────────────────
+  sourceafis:
+    build: ./sourceafis
+    container_name: exam_bio_sourceafis
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Admin Panel (internal only — accessed via nginx at /) ──────────────
+  admin-panel:
+    build: ./admin-panel
+    container_name: exam_bio_admin
+    restart: unless-stopped
+    depends_on:
+      - server
+    networks:
+      - internal
+
+  # ── Supervisor Panel (internal only — accessed via nginx at /sp/) ──────
+  supervisor-panel:
+    build: ./supervisor-panel
+    container_name: exam_bio_supervisor
+    restart: unless-stopped
+    depends_on:
+      - server
+    networks:
+      - internal
+
+  # ── nginx Reverse Proxy (only publicly exposed service) ────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: exam_bio_nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - server
+      - admin-panel
+      - supervisor-panel
+    networks:
+      - internal
+      - public
+
+volumes:
+  pgdata:
+  biometrics:
+
+networks:
+  internal:
+    driver: bridge
+  public:
+    driver: bridge
