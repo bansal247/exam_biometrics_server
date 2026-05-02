@@ -273,5 +273,3 @@ This is a complete product built by a single engineer — from database schema t
 - **Async at scale**: Non-blocking API workers + dedicated scheduler container processing 90K+ operations/hour
 - **Offline-first mobile**: WorkManager retry queue, local Room cache, session expiry handling
 - **Production deployment**: 9-service Docker Compose stack with health checks, connection pooling, and reverse proxy tuning
-
-If you need a system built with this level of depth — full-stack, mobile, hardware integration, or data-sensitive backend — [connect on Upwork](https://www.upwork.com) or reach out directly.
