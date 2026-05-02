@@ -1,0 +1,146 @@
+# AWS deployment compose — replaces local docker-compose.yml
+#
+# Key differences from local:
+#   - No 'db' container: uses RDS PostgreSQL (endpoint in .env.aws)
+#   - No 'pgdata' volume: RDS manages persistence
+#   - 'biometrics' volume bind-mounts /mnt/efs/biometrics (EFS, always-on)
+#   - server/scheduler route DB through PgBouncer → RDS
+#   - IRIS_ENDPOINT reaches the host iris server via host.docker.internal:8080
+#
+# Usage:
+#   docker compose --env-file .env.aws -f docker-compose.aws.yml up -d
+#   docker compose --env-file .env.aws -f docker-compose.aws.yml down
+
+services:
+
+  # ── PgBouncer (transaction pooler → RDS) ────────────────────────────────
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: exam_bio_pgbouncer
+    restart: unless-stopped
+    environment:
+      DATABASES_HOST: ${RDS_ENDPOINT}
+      DATABASES_PORT: "5432"
+      DATABASES_DBNAME: ${DB_NAME}
+      DATABASES_USER: ${DB_USER}
+      DATABASES_PASSWORD: ${DB_PASSWORD}
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: "5000"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "30"
+      PGBOUNCER_AUTH_TYPE: trust
+    healthcheck:
+      test: ["CMD-SHELL", "echo 'select 1' | psql -h 127.0.0.1 -p 5432 -U ${DB_USER} ${DB_NAME} || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - internal
+
+  # ── API Server ───────────────────────────────────────────────────────────
+  server:
+    build: ./server
+    container_name: exam_bio_server
+    restart: unless-stopped
+    env_file: .env.aws
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: "5432"
+      BIOMETRICS_DIR: /biometrics
+      IRIS_ENDPOINT: http://host.docker.internal:8080
+    volumes:
+      - biometrics:/biometrics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      sourceafis:
+        condition: service_started
+    networks:
+      - internal
+
+  # ── Scheduler (background cron jobs) ────────────────────────────────────
+  scheduler:
+    build: ./server
+    container_name: exam_bio_scheduler
+    restart: unless-stopped
+    env_file: .env.aws
+    environment:
+      DB_HOST: pgbouncer
+      DB_PORT: "5432"
+      BIOMETRICS_DIR: /biometrics
+      IRIS_ENDPOINT: http://host.docker.internal:8080
+    volumes:
+      - biometrics:/biometrics
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      sourceafis:
+        condition: service_started
+    command: ["python", "scheduler.py"]
+    networks:
+      - internal
+
+  # ── SourceAFIS (fingerprint) ─────────────────────────────────────────────
+  sourceafis:
+    build: ./sourceafis
+    container_name: exam_bio_sourceafis
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Admin Panel ──────────────────────────────────────────────────────────
+  admin-panel:
+    build: ./admin-panel
+    container_name: exam_bio_admin
+    restart: unless-stopped
+    depends_on:
+      - server
+    networks:
+      - internal
+
+  # ── Supervisor Panel ─────────────────────────────────────────────────────
+  supervisor-panel:
+    build: ./supervisor-panel
+    container_name: exam_bio_supervisor
+    restart: unless-stopped
+    depends_on:
+      - server
+    networks:
+      - internal
+
+  # ── nginx (only publicly exposed service) ────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: exam_bio_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - server
+      - admin-panel
+      - supervisor-panel
+    networks:
+      - internal
+      - public
+
+volumes:
+  # Bind-mount to EFS so biometric files persist independently of the EC2 instance.
+  # EFS must be mounted at /mnt/efs on the host before starting this stack (see aws/setup.sh).
+  biometrics:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/efs/biometrics
+
+networks:
+  internal:
+    driver: bridge
+  public:
+    driver: bridge
