@@ -110,8 +110,8 @@ services:
     image: nginx:alpine
     container_name: exam_bio_nginx
     restart: unless-stopped
-    expose:
-      - "80"
+    ports:
+      - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
