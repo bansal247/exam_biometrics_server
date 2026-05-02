@@ -12,7 +12,6 @@
 #   docker compose --env-file .env.aws -f docker-compose.aws.yml down
 
 services:
-
   # ── PgBouncer (transaction pooler → RDS) ────────────────────────────────
   pgbouncer:
     image: pgbouncer/pgbouncer:latest
@@ -27,13 +26,7 @@ services:
       PGBOUNCER_POOL_MODE: transaction
       PGBOUNCER_MAX_CLIENT_CONN: "5000"
       PGBOUNCER_DEFAULT_POOL_SIZE: "30"
-      PGBOUNCER_AUTH_TYPE: trust
-    healthcheck:
-      test: ["CMD-SHELL", "echo 'select 1' | psql -h 127.0.0.1 -p 5432 -U ${DB_USER} ${DB_NAME} || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 30s
+      PGBOUNCER_AUTH_TYPE: md5
     networks:
       - internal
 
@@ -45,16 +38,16 @@ services:
     env_file: .env.aws
     environment:
       DB_HOST: pgbouncer
-      DB_PORT: "5432"
+      DB_PORT: "6432"
       BIOMETRICS_DIR: /biometrics
-      IRIS_ENDPOINT: http://host.docker.internal:8080
+      IRIS_ENDPOINT: ${IRIS_ENDPOINT}
     volumes:
       - biometrics:/biometrics
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       pgbouncer:
-        condition: service_healthy
+        condition: service_started
       sourceafis:
         condition: service_started
     networks:
@@ -68,16 +61,16 @@ services:
     env_file: .env.aws
     environment:
       DB_HOST: pgbouncer
-      DB_PORT: "5432"
+      DB_PORT: "6432"
       BIOMETRICS_DIR: /biometrics
-      IRIS_ENDPOINT: http://host.docker.internal:8080
+      IRIS_ENDPOINT: ${IRIS_ENDPOINT}
     volumes:
       - biometrics:/biometrics
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       pgbouncer:
-        condition: service_healthy
+        condition: service_started
       sourceafis:
         condition: service_started
     command: ["python", "scheduler.py"]
