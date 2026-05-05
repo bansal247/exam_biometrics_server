@@ -13,22 +13,22 @@
 
 services:
   # ── PgBouncer (transaction pooler → RDS) ────────────────────────────────
-  pgbouncer:
-    image: pgbouncer/pgbouncer:latest
-    container_name: exam_bio_pgbouncer
-    restart: unless-stopped
-    environment:
-      DATABASES_HOST: ${RDS_ENDPOINT}
-      DATABASES_PORT: "5432"
-      DATABASES_DBNAME: ${DB_NAME}
-      DATABASES_USER: ${DB_USER}
-      DATABASES_PASSWORD: ${DB_PASSWORD}
-      PGBOUNCER_POOL_MODE: transaction
-      PGBOUNCER_MAX_CLIENT_CONN: "5000"
-      PGBOUNCER_DEFAULT_POOL_SIZE: "30"
-      PGBOUNCER_AUTH_TYPE: md5
-    networks:
-      - internal
+  # pgbouncer:
+  #   image: pgbouncer/pgbouncer:latest
+  #   container_name: exam_bio_pgbouncer
+  #   restart: unless-stopped
+  #   environment:
+  #     DATABASES_HOST: ${RDS_ENDPOINT}
+  #     DATABASES_PORT: "5432"
+  #     DATABASES_DBNAME: ${DB_NAME}
+  #     DATABASES_USER: ${DB_USER}
+  #     DATABASES_PASSWORD: ${DB_PASSWORD}
+  #     PGBOUNCER_POOL_MODE: transaction
+  #     PGBOUNCER_MAX_CLIENT_CONN: "5000"
+  #     PGBOUNCER_DEFAULT_POOL_SIZE: "30"
+  #     PGBOUNCER_AUTH_TYPE: trust
+  #   networks:
+  #     - internal
 
   # ── API Server ───────────────────────────────────────────────────────────
   server:
@@ -37,8 +37,8 @@ services:
     restart: unless-stopped
     env_file: .env.aws
     environment:
-      DB_HOST: pgbouncer
-      DB_PORT: "6432"
+      DB_HOST: ${RDS_ENDPOINT}
+      DB_PORT: "5432"
       BIOMETRICS_DIR: /biometrics
       IRIS_ENDPOINT: ${IRIS_ENDPOINT}
     volumes:
@@ -60,8 +60,8 @@ services:
     restart: unless-stopped
     env_file: .env.aws
     environment:
-      DB_HOST: pgbouncer
-      DB_PORT: "6432"
+      DB_HOST: ${RDS_ENDPOINT}
+      DB_PORT: "5432"
       BIOMETRICS_DIR: /biometrics
       IRIS_ENDPOINT: ${IRIS_ENDPOINT}
     volumes:

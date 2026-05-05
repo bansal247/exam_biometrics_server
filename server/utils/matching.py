@@ -42,12 +42,18 @@ def _get_rekognition():
     global _rekognition
     if _rekognition is None:
         s = get_settings()
-        _rekognition = boto3.client(
-            "rekognition",
-            aws_access_key_id=s.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=s.AWS_SECRET_ACCESS_KEY,
-            region_name=s.AWS_REGION,
-        )
+        if s.AWS_ACCESS_KEY_ID is None or s.AWS_SECRET_ACCESS_KEY is None:
+            _rekognition = boto3.client(
+                "rekognition",
+                region_name=s.AWS_REGION,
+            )
+        else:
+            _rekognition = boto3.client(
+                "rekognition",
+                aws_access_key_id=s.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=s.AWS_SECRET_ACCESS_KEY,
+                region_name=s.AWS_REGION,
+            )
     return _rekognition
 
 

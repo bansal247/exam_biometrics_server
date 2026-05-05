@@ -7,6 +7,7 @@ Memory model:
 - Peak RAM per batch ≈ PDF_BATCH × images_per_candidate × avg_image_size
 
 Usage (inside the Docker container):
+    docker exec -it exam_bio_server bash
     python utils/generate_zip.py --exam-id <uuid>
     python utils/generate_zip.py --exam-id <uuid> --output /biometrics/exports/myexam
     python utils/generate_zip.py --exam-id <uuid> --zip

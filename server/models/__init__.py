@@ -189,6 +189,7 @@ class CandidateMatch(Base, TimestampMixin):
     new_iris_id              = Column(UUID(as_uuid=True), ForeignKey("irises.id"), nullable=True)
     iris_match_status        = Column(String(10), nullable=True)   # null|match|mismatch
     iris_matched_at          = Column(DateTime, nullable=True)
+    is_load_test         = Column(Boolean, default=False, nullable=False, server_default="false")
     __table_args__ = (
         UniqueConstraint("exam_id", "shift_id", "center_id", "candidate_no_plain", name="uq_cm"),
         Index("ix_cm_exam_shift_center", "exam_id", "shift_id", "center_id"),
