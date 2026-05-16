@@ -330,16 +330,14 @@ async function loadMatchingTab() {
   let url = `/supervisor/matching?exam_id=${EXAM_ID}&center_id=${cid}&shift_id=${sid}`;
   try {
     const data = await api(url);
-    const matched = data.filter(d => d.photo_match_status === 'match').length;
-    const failed  = data.filter(d => d.photo_match_status === 'mismatch').length;
-    const pending = data.length - matched - failed;
-    document.getElementById('match-matched').textContent = matched;
-    document.getElementById('match-failed').textContent  = failed;
-    document.getElementById('match-pending').textContent = pending;
+    const { stats, rows } = data;
+    document.getElementById('match-matched').textContent = stats.matched;
+    document.getElementById('match-failed').textContent  = stats.failed;
+    document.getElementById('match-pending').textContent = stats.pending;
     drawPie('match-chart', [
-      { label: 'Matched', value: matched, color: '#10b981' },
-      { label: 'Failed',  value: failed,  color: '#ef4444' },
-      { label: 'Pending', value: pending, color: '#f59e0b' },
+      { label: 'Matched', value: stats.matched, color: '#10b981' },
+      { label: 'Failed',  value: stats.failed,  color: '#ef4444' },
+      { label: 'Pending', value: stats.pending, color: '#f59e0b' },
     ]);
 
     // Dynamic headers
@@ -350,11 +348,7 @@ async function loadMatchingTab() {
     document.getElementById('sup-match-thead').innerHTML =
       '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
 
-    const mismatches = data.filter(d =>
-      d.photo_match_status === 'mismatch' ||
-      (isMatch && (d.fingerprint_match_status === 'mismatch' || d.iris_match_status === 'mismatch'))
-    );
-    document.getElementById('match-body').innerHTML = mismatches.map((d, i) => {
+    document.getElementById('match-body').innerHTML = rows.map((d, i) => {
       const midCells = isMatch
         ? [
             _thumb(d.photo_data), _thumb(d.captured_photo_data), badge(d.photo_match_status),

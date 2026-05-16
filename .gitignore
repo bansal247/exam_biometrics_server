@@ -3,9 +3,9 @@ __pycache__/
 node_modules/
 .gradle/
 build/
-.env
 faces/
 compare_faces.ipynb
 .claude
 docker-compose.dev.yml
 load-test/
+config.bat

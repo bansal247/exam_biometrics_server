@@ -1,0 +1,17 @@
+# Install mdadm
+apt install mdadm
+
+# Create RAID-10 array from the 4 NVMe drives
+mdadm --create /dev/md0 --level=10 --raid-devices=4 /dev/nvme0n1 /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1
+
+# Format and mount
+mkfs.ext4 /dev/md0
+mkdir -p /biometrics
+mount /dev/md0 /biometrics
+
+# Add to /etc/fstab so it mounts on reboot:
+echo "/dev/md0  /biometrics  ext4  defaults  0  0" >> /etc/fstab
+
+# Save RAID config so it survives reboot:
+mdadm --detail --scan >> /etc/mdadm/mdadm.conf
+update-initramfs -u
