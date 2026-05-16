@@ -18,7 +18,7 @@ from utils.logger import log_supervisor, log_auth
 
 from routers.admin import (
     _attendance_data, _build_match_rows, _centers_summary_data,
-    _delete_capture_submission, _duplicates_data,
+    _delete_capture_submission, _duplicates_data, _row_is_mismatch,
 )
 
 router = APIRouter(prefix="/supervisor", tags=["Supervisor"])
@@ -72,9 +72,18 @@ async def get_duplicates(exam_id: UUID, center_id: UUID | None = None, shift_id:
 @router.get("/matching")
 async def get_matching(exam_id: UUID, center_id: UUID | None = None, shift_id: UUID | None = None,
                         db: AsyncSession = Depends(get_db), sup: dict = Depends(require_supervisor)):
-    results = await _build_match_rows(db, exam_id, center_id, shift_id)
+    all_rows = await _build_match_rows(db, exam_id, center_id, shift_id)
+    matched = sum(1 for r in all_rows if not _row_is_mismatch(r) and getattr(r, "photo_match_status", None) == "match")
+    failed  = sum(1 for r in all_rows if _row_is_mismatch(r))
+    pending = sum(1 for r in all_rows if getattr(r, "photo_match_status", None) is None
+                  and getattr(r, "fingerprint_match_status", None) is None
+                  and getattr(r, "iris_match_status", None) is None)
+    mismatch_rows = [r for r in all_rows if _row_is_mismatch(r)]
     await log_supervisor(db, sup["sub"], "get_matching", {"exam_id": str(exam_id)})
-    return results
+    return {
+        "stats": {"matched": matched, "failed": failed, "pending": pending, "total": len(all_rows)},
+        "rows":  mismatch_rows,
+    }
 
 
 @router.get("/centers-summary", response_model=list[CenterSummaryRow])

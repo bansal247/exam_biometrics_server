@@ -80,6 +80,11 @@
             <select id="ex-type"><option value="capture">Capture</option><option value="match">Match</option></select>
             <input id="ex-qr" placeholder="QR Regex (optional)">
           </div>
+          <div class="row" style="gap:1.5rem; align-items:center; margin-top:.25rem">
+            <label><input type="checkbox" id="ex-req-photo" checked> Require Photo</label>
+            <label><input type="checkbox" id="ex-req-fp"> Require Fingerprint</label>
+            <label><input type="checkbox" id="ex-req-iris"> Require Iris</label>
+          </div>
           <div class="row">
             <label>Supervisors: <input id="ex-nsup" type="number" min="1" max="10" value="1" onchange="renderUserFields()"></label>
             <label>Operators: <input id="ex-nop" type="number" min="1" max="10" value="1" onchange="renderUserFields()"></label>
@@ -192,9 +197,6 @@
               <div class="stat-card pending"><span id="match-pending" class="stat-num">0</span><span>Pending</span></div>
             </div>
             <div class="card"><canvas id="match-chart" height="200"></canvas></div>
-            <div class="row">
-              <button onclick="downloadMatching('pdf')" class="btn-red">⬇ PDF</button>
-            </div>
             <div class="card"><table><thead><tr>
               <th>No</th><th>Name</th><th>Attended</th><th>Ref Photo</th><th>Captured</th>
               <th>Photo</th><th>Fingerprint</th><th>Iris</th><th>Center</th><th>Shift</th>

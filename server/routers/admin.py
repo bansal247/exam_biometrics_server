@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import io
-import uuid as uuid_module
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -574,7 +573,9 @@ async def create_exam(body: ExamCreate, db: AsyncSession = Depends(get_db),
         raise HTTPException(400, "Exam name already exists")
     sync_key = Fernet.generate_key().decode()
     exam = Exam(name=body.name, name_lower=name_lower, type=body.type,
-                qr_string=body.qr_string, sync_key=sync_key, sync_key_plain=sync_key)
+                qr_string=body.qr_string, sync_key=sync_key, sync_key_plain=sync_key,
+                require_photo=body.require_photo, require_fingerprint=body.require_fingerprint,
+                require_iris=body.require_iris)
     db.add(exam)
     await db.flush()
     for i in range(body.num_supervisors):
@@ -591,7 +592,10 @@ async def create_exam(body: ExamCreate, db: AsyncSession = Depends(get_db),
     await log_admin(db, admin["sub"], "create_exam", {"name": body.name, "type": body.type})
     return ExamOut(id=exam.id, name=exam.name, type=exam.type, qr_string=exam.qr_string,
                    qr_data=exam.qr_data, archived=exam.archived, archived_at=exam.archived_at,
-                   sync_key=exam.sync_key, created_at=exam.created_at)
+                   sync_key=exam.sync_key, is_finalized=exam.is_finalized,
+                   finalized_at=exam.finalized_at, require_photo=exam.require_photo,
+                   require_fingerprint=exam.require_fingerprint, require_iris=exam.require_iris,
+                   created_at=exam.created_at)
 
 
 @router.put("/exams/{exam_id}", response_model=ExamOut)
@@ -605,11 +609,22 @@ async def edit_exam(exam_id: UUID, body: ExamEdit, db: AsyncSession = Depends(ge
         exam.archived_at = datetime.utcnow() if body.archived else None
     if body.qr_string is not None:
         exam.qr_string = body.qr_string
+    if body.require_photo is not None:
+        exam.require_photo = body.require_photo
+    if body.require_fingerprint is not None:
+        exam.require_fingerprint = body.require_fingerprint
+    if body.require_iris is not None:
+        exam.require_iris = body.require_iris
+    if not (exam.require_photo or exam.require_fingerprint or exam.require_iris):
+        raise HTTPException(400, "At least one modality must be required")
     await db.flush()
     await log_admin(db, admin["sub"], "edit_exam", {"exam_id": str(exam_id)})
     return ExamOut(id=exam.id, name=exam.name, type=exam.type, qr_string=exam.qr_string,
                    qr_data=exam.qr_data, archived=exam.archived, archived_at=exam.archived_at,
-                   sync_key=exam.sync_key, created_at=exam.created_at)
+                   sync_key=exam.sync_key, is_finalized=exam.is_finalized,
+                   finalized_at=exam.finalized_at, require_photo=exam.require_photo,
+                   require_fingerprint=exam.require_fingerprint, require_iris=exam.require_iris,
+                   created_at=exam.created_at)
 
 
 @router.get("/exams", response_model=list[ExamOut])
@@ -617,7 +632,162 @@ async def get_exams(db: AsyncSession = Depends(get_db), _: dict = Depends(requir
     rows = (await db.execute(select(Exam))).scalars().all()
     return [ExamOut(id=r.id, name=r.name, type=r.type, qr_string=r.qr_string, qr_data=r.qr_data,
                     archived=r.archived, archived_at=r.archived_at, sync_key=r.sync_key,
-                    created_at=r.created_at) for r in rows]
+                    is_finalized=r.is_finalized, finalized_at=r.finalized_at,
+                    require_photo=r.require_photo, require_fingerprint=r.require_fingerprint,
+                    require_iris=r.require_iris, created_at=r.created_at) for r in rows]
+
+
+# ── Exam Finalization ──────────────────────────────────────────────────────────
+
+async def _generate_staged_zips(exam_id: UUID, settings) -> int:
+    """Build per-(shift, center) ZIPs of compressed photos into /biometrics/staged/{exam_id}/."""
+    import zipfile
+    import json
+    from sqlalchemy import distinct
+    from utils.biometric_storage import read_file
+    from database import async_session
+
+    async with async_session() as db:
+        exam = await db.get(Exam, exam_id)
+        if not exam:
+            return 0
+
+        table = CandidateCapture if exam.type == "capture" else CandidateMatch
+
+        combos = (await db.execute(
+            select(distinct(table.shift_id), table.center_id)
+            .where(table.exam_id == exam_id)
+        )).all()
+
+        staged_root = Path(settings.BIOMETRICS_DIR) / "staged" / str(exam_id)
+        staged_root.mkdir(parents=True, exist_ok=True)
+
+        for shift_id, center_id in combos:
+            rows = (await db.execute(
+                select(table).where(
+                    table.exam_id == exam_id,
+                    table.shift_id == shift_id,
+                    table.center_id == center_id,
+                )
+            )).scalars().all()
+
+            photo_ids = {r.photo_id for r in rows if r.photo_id}
+            photos = {}
+            if photo_ids:
+                photos = {p.id: p for p in (await db.execute(
+                    select(Photo).where(Photo.id.in_(photo_ids))
+                )).scalars().all()}
+
+            meta = []
+            for row in rows:
+                meta.append({
+                    "candidate_id": str(row.id),
+                    "candidate_no": row.candidate_no,
+                    "name": row.name,
+                    "roll_no": row.roll_no,
+                    "father_name": row.father_name,
+                    "mother_name": row.mother_name,
+                    "dob": str(row.dob) if row.dob else None,
+                    "attendance": getattr(row, "attendance", None),
+                    "has_photo": row.photo_id is not None,
+                    "has_fingerprint": row.fingerprint_id is not None,
+                    "has_iris": row.iris_id is not None,
+                    "photo_match_status": getattr(row, "photo_match_status", None),
+                })
+
+            zip_path = staged_root / f"{shift_id}_{center_id}.zip"
+
+            with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_STORED) as zf:
+                zf.writestr(
+                    "candidates.json",
+                    json.dumps(meta, ensure_ascii=False)
+                )
+
+                for row in rows:
+                    if not row.photo_id:
+                        continue
+
+                    photo_obj = photos.get(row.photo_id)
+                    if not photo_obj:
+                        continue
+
+                    path = photo_obj.compressed_file_path or photo_obj.file_path
+                    if not path:
+                        continue
+
+                    data = await asyncio.to_thread(read_file, path)
+
+                    if data:
+                        zf.writestr(
+                            f"photos/{row.candidate_no_plain}.jpg",
+                            data
+                        )
+
+    return len(combos)
+
+
+@router.post("/exams/{exam_id}/finalize")
+async def finalize_exam(
+    exam_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    exam = await db.get(Exam, exam_id)
+    if not exam:
+        raise HTTPException(404, "Exam not found")
+
+    table = CandidateCapture if exam.type == "capture" else CandidateMatch
+    missing = await db.scalar(
+        select(func.count(table.id)).where(
+            table.exam_id == exam_id,
+            table.photo_id.isnot(None),
+        ).join(Photo, table.photo_id == Photo.id)
+        .where(Photo.compressed_file_path.is_(None))
+    )
+    if missing and missing > 0:
+        raise HTTPException(400, f"{missing} reference photos have not been compressed yet. "
+                                 "Wait for the cron job to finish, then retry.")
+
+    exam.is_finalized = True
+    exam.finalized_at = datetime.utcnow()
+    await db.flush()
+
+    s = get_settings()
+    asyncio.create_task(_generate_staged_zips(exam_id, s))
+
+    await log_admin(db, admin["sub"], "finalize_exam", {"exam_id": str(exam_id)})
+    combos_q = CandidateCapture if exam.type == "capture" else CandidateMatch
+    combo_count = await db.scalar(
+        select(func.count()).select_from(
+            select(combos_q.shift_id, combos_q.center_id)
+            .where(combos_q.exam_id == exam_id)
+            .distinct().subquery()
+        )
+    )
+    return {"status": "staging", "combos": combo_count or 0}
+
+
+@router.post("/exams/{exam_id}/restage")
+async def restage_exam(
+    exam_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    admin: dict = Depends(require_admin),
+):
+    import shutil
+    exam = await db.get(Exam, exam_id)
+    if not exam:
+        raise HTTPException(404, "Exam not found")
+    if not exam.is_finalized:
+        raise HTTPException(400, "Exam is not finalized — call /finalize first")
+
+    s = get_settings()
+    staged_dir = Path(s.BIOMETRICS_DIR) / "staged" / str(exam_id)
+    if staged_dir.exists():
+        await asyncio.to_thread(shutil.rmtree, str(staged_dir), ignore_errors=True)
+
+    asyncio.create_task(_generate_staged_zips(exam_id, s))
+    await log_admin(db, admin["sub"], "restage_exam", {"exam_id": str(exam_id)})
+    return {"status": "restaging"}
 
 
 # ── Add Candidate ──────────────────────────────────────────────────────────────
@@ -817,12 +987,29 @@ async def get_attendance(exam_id: UUID, center_id: UUID | None = None, shift_id:
 
 # ── Matching ───────────────────────────────────────────────────────────────────
 
+def _row_is_mismatch(row) -> bool:
+    return (
+        getattr(row, "photo_match_status", None) == "mismatch"
+        or getattr(row, "fingerprint_match_status", None) == "mismatch"
+        or getattr(row, "iris_match_status", None) == "mismatch"
+    )
+
+
 @router.get("/matching")
 async def get_matching(exam_id: UUID, center_id: UUID | None = None, shift_id: UUID | None = None,
                         db: AsyncSession = Depends(get_db), admin: dict = Depends(require_admin)):
-    results = await _build_match_rows(db, exam_id, center_id, shift_id)
+    all_rows = await _build_match_rows(db, exam_id, center_id, shift_id)
+    matched = sum(1 for r in all_rows if not _row_is_mismatch(r) and getattr(r, "photo_match_status", None) == "match")
+    failed  = sum(1 for r in all_rows if _row_is_mismatch(r))
+    pending = sum(1 for r in all_rows if getattr(r, "photo_match_status", None) is None
+                  and getattr(r, "fingerprint_match_status", None) is None
+                  and getattr(r, "iris_match_status", None) is None)
+    mismatch_rows = [r for r in all_rows if _row_is_mismatch(r)]
     await log_admin(db, admin["sub"], "get_matching", {"exam_id": str(exam_id)})
-    return results
+    return {
+        "stats": {"matched": matched, "failed": failed, "pending": pending, "total": len(all_rows)},
+        "rows":  mismatch_rows,
+    }
 
 
 # ── Duplicates ─────────────────────────────────────────────────────────────────
