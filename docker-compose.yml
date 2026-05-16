@@ -9,6 +9,19 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
+    # Dev-environment tuning (scaled for Docker, not bare-metal).
+    # Production: edit /etc/postgresql/16/main/postgresql.conf with 32GB shared_buffers etc.
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+      -c wal_buffers=16MB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c max_connections=100
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -31,7 +44,7 @@ services:
       DATABASES_PASSWORD: ${DB_PASSWORD}
       PGBOUNCER_POOL_MODE: transaction
       PGBOUNCER_MAX_CLIENT_CONN: "5000"
-      PGBOUNCER_DEFAULT_POOL_SIZE: "30"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "80"
       PGBOUNCER_AUTH_TYPE: trust
     depends_on:
       db:
@@ -117,6 +130,7 @@ services:
       - "${NGINX_PORT:-80}:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - biometrics:/biometrics:ro
     depends_on:
       - server
       - admin-panel

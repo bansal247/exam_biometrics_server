@@ -2,17 +2,25 @@
 
 import asyncio
 import base64
+import io
+import json
+import tempfile
+import time as _time
+import zipfile
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Header, Query, Request, Response, UploadFile
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import select, func, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import get_db
+from config import get_settings
+from database import async_session, get_db
 from models import (Operator, Exam, Center, Shift, Photo,
                     Fingerprint, Iris, CandidateCapture, CandidateMatch, DeviceSession)
 from schemas import (OperatorLogin, TokenResponse, OperatorSessionLogin,
@@ -27,6 +35,35 @@ from utils.matching import (match_photos, match_fingerprints, match_iris,
                              extract_fingerprint_template, extract_iris_template)
 
 router = APIRouter(prefix="/operator", tags=["Operator"])
+
+# ── Module-level state ────────────────────────────────────────────────────────
+
+# Heartbeat buffer: (device_id, exam_id) → unix timestamp; flushed every 30 s
+_heartbeat_buf: dict[tuple, float] = {}
+_hb_lock = asyncio.Lock()
+
+# Caps concurrent filesystem reads across all simultaneous /pull-sync requests
+_PULL_SEM = asyncio.Semaphore(32)
+
+
+async def _flush_heartbeats():
+    """Background task wired into FastAPI lifespan — bulk-writes buffered heartbeats."""
+    while True:
+        await asyncio.sleep(30)
+        async with _hb_lock:
+            if not _heartbeat_buf:
+                continue
+            snapshot = dict(_heartbeat_buf)
+            _heartbeat_buf.clear()
+        async with async_session() as db:
+            for (device_id, exam_id_str), ts in snapshot.items():
+                await db.execute(
+                    update(DeviceSession)
+                    .where(DeviceSession.device_id == device_id,
+                           DeviceSession.exam_id == UUID(exam_id_str))
+                    .values(last_heartbeat=datetime.utcfromtimestamp(ts))
+                )
+            await db.commit()
 
 
 # ── Sync-key auth dependency ──────────────────────────────────────────────────
@@ -166,7 +203,8 @@ async def get_exams(db: AsyncSession = Depends(get_db), op: dict = Depends(requi
     await log_operator(db, op["sub"], "get_exams", {"exam_id": op["exam_id"]})
     return {"exam_id": str(exam.id), "exam_name": exam.name, "sync_key": exam.sync_key,
             "qr_string": exam.qr_string, "qr_data": exam.qr_data, "type": exam.type,
-            "centers": list(centers_map.values())}
+            "require_photo": exam.require_photo, "require_fingerprint": exam.require_fingerprint,
+            "require_iris": exam.require_iris, "centers": list(centers_map.values())}
 
 
 @router.post("/session-login", response_model=TokenResponse)
@@ -192,6 +230,9 @@ async def operator_session_login(body: OperatorSessionLogin, response: Response,
             "role": "operator_session", "sub": op["sub"],
             "exam_id": str(body.exam_id), "shift_id": str(body.shift_id),
             "center_id": str(body.center_id), "device_id": body.device_id,
+            "require_photo": exam.require_photo if exam else True,
+            "require_fingerprint": exam.require_fingerprint if exam else False,
+            "require_iris": exam.require_iris if exam else False,
         },
         expires_minutes=1440,
     )
@@ -203,17 +244,12 @@ async def operator_session_login(body: OperatorSessionLogin, response: Response,
 # ── Device heartbeat ──────────────────────────────────────────────────────────
 
 @router.post("/heartbeat")
-async def heartbeat(db: AsyncSession = Depends(get_db),
-                    session: dict = Depends(require_operator_session)):
+async def heartbeat(session: dict = Depends(require_operator_session)):
     device_id = session.get("device_id")
     if device_id:
-        await db.execute(
-            update(DeviceSession)
-            .where(DeviceSession.device_id == device_id,
-                   DeviceSession.exam_id == UUID(session["exam_id"]))
-            .values(last_heartbeat=datetime.utcnow())
-        )
-        await db.commit()
+        key = (device_id, session["exam_id"])
+        async with _hb_lock:
+            _heartbeat_buf[key] = _time.time()
     return {"status": "ok"}
 
 
@@ -274,9 +310,10 @@ async def get_capture_details(
         select(Photo).where(Photo.id.in_(ref_photo_ids))
     )).scalars().all()} if ref_photo_ids else {}
 
-    # Parallel photo reads
+    # Parallel photo reads — prefer compressed reference photo
     _photo_paths = {
-        cno: photos_by_id[rows[0].photo_id].file_path
+        cno: (photos_by_id[rows[0].photo_id].compressed_file_path
+              or photos_by_id[rows[0].photo_id].file_path)
         for cno, rows in grouped.items()
         if rows[0].photo_id and rows[0].photo_id in photos_by_id
     }
@@ -314,16 +351,188 @@ async def get_capture_details(
     return results
 
 
+# ── Candidates ZIP download ───────────────────────────────────────────────────
+
+@router.get("/candidates-zip")
+async def candidates_zip(
+    db: AsyncSession = Depends(get_db),
+    session: dict = Depends(require_operator_session),
+):
+    exam_id   = UUID(session["exam_id"])
+    shift_id  = UUID(session["shift_id"])
+    center_id = UUID(session["center_id"])
+
+    # Serve pre-generated static ZIP if exam is finalized
+    settings = get_settings()
+    staged_path = (Path(settings.BIOMETRICS_DIR) / "staged"
+                   / str(exam_id) / f"{shift_id}_{center_id}.zip")
+    if staged_path.exists():
+        return RedirectResponse(
+            url=f"/staged-zips/{exam_id}/{shift_id}_{center_id}.zip"
+        )
+
+    all_rows = (await db.execute(
+        select(CandidateCapture)
+        .where(CandidateCapture.exam_id == exam_id,
+               CandidateCapture.shift_id == shift_id,
+               CandidateCapture.center_id == center_id)
+        .order_by(CandidateCapture.candidate_no_plain, CandidateCapture.created_at.asc())
+    )).scalars().all()
+
+    grouped: dict = defaultdict(list)
+    for row in all_rows:
+        grouped[row.candidate_no_plain].append(row)
+
+    ref_photo_ids = {rows[0].photo_id for rows in grouped.values() if rows[0].photo_id}
+    photos_by_id = {p.id: p for p in (await db.execute(
+        select(Photo).where(Photo.id.in_(ref_photo_ids))
+    )).scalars().all()} if ref_photo_ids else {}
+
+    # Read all reference photos in parallel (binary, not base64) — prefer compressed
+    _photo_paths = {
+        cno: (photos_by_id[rows[0].photo_id].compressed_file_path
+              or photos_by_id[rows[0].photo_id].file_path)
+        for cno, rows in grouped.items()
+        if rows[0].photo_id and rows[0].photo_id in photos_by_id
+    }
+    _cno_keys = list(_photo_paths)
+    _raw_values = await asyncio.gather(*[
+        asyncio.to_thread(read_file, _photo_paths[k]) for k in _cno_keys
+    ])
+    photo_bytes_map: dict = {k: v for k, v in zip(_cno_keys, _raw_values) if v}
+
+    meta = []
+    for cno, rows in grouped.items():
+        seed = rows[0]
+        any_attended = any(r.attendance == "present" for r in rows)
+        has_photo = any(r.new_photo_id is not None for r in rows)
+        has_fp    = any(r.fingerprint_id is not None for r in rows)
+        has_iris  = any(r.iris_id is not None for r in rows)
+        match_statuses = [r.photo_match_status for r in rows if r.new_photo_id]
+        latest_match   = match_statuses[-1] if match_statuses else None
+        meta.append({
+            "candidate_id":       str(seed.id),
+            "candidate_no":       seed.candidate_no,
+            "name":               seed.name,
+            "roll_no":            seed.roll_no,
+            "father_name":        seed.father_name,
+            "mother_name":        seed.mother_name,
+            "dob":                str(seed.dob) if seed.dob else None,
+            "attended":           any_attended,
+            "has_photo":          has_photo,
+            "has_fingerprint":    has_fp,
+            "has_iris":           has_iris,
+            "photo_match_status": latest_match,
+        })
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("candidates.json", json.dumps(meta))
+        for cno, data in photo_bytes_map.items():
+            zf.writestr(f"photos/{cno}.jpg", data)
+    buf.seek(0)
+
+    await log_operator(db, session["sub"], "candidates_zip", {"count": len(meta)})
+    return Response(content=buf.read(), media_type="application/zip")
+
+
+# ── Pull sync: download biometrics captured by other devices ──────────────────
+
+from pydantic import BaseModel as _BaseModel
+
+class _PullSyncItem(_BaseModel):
+    candidate_no: str
+    needs: List[str]   # ["photo", "fingerprint", "iris"]
+
+class _PullSyncRequest(_BaseModel):
+    candidates: List[_PullSyncItem]
+
+@router.post("/pull-sync")
+async def pull_sync(
+    body: _PullSyncRequest,
+    exam: Exam = Depends(_exam_by_sync_key),
+    db: AsyncSession = Depends(get_db),
+):
+    all_captures = (await db.execute(
+        select(CandidateCapture)
+        .where(CandidateCapture.exam_id == exam.id)
+        .where(CandidateCapture.candidate_no_plain.in_(
+            [item.candidate_no for item in body.candidates]
+        ))
+    )).scalars().all()
+
+    cap_by_no: dict = defaultdict(list)
+    for c in all_captures:
+        cap_by_no[c.candidate_no_plain].append(c)
+
+    # Phase 1: resolve file paths from DB (sequential, cheap)
+    read_tasks: list[tuple[str, str, str]] = []  # (candidate_no, modality, file_path)
+    for item in body.candidates:
+        rows = cap_by_no.get(item.candidate_no, [])
+        if not rows:
+            continue
+        for modality in item.needs:
+            file_path = None
+            if modality == "photo":
+                photo_id = next((r.new_photo_id for r in rows if r.new_photo_id), None)
+                if photo_id:
+                    obj = await db.get(Photo, photo_id)
+                    if obj:
+                        file_path = obj.compressed_file_path or obj.file_path
+            elif modality == "fingerprint":
+                fp_id = next((r.fingerprint_id for r in rows if r.fingerprint_id), None)
+                if fp_id:
+                    obj = await db.get(Fingerprint, fp_id)
+                    if obj:
+                        file_path = obj.file_path
+            elif modality == "iris":
+                iris_id = next((r.iris_id for r in rows if r.iris_id), None)
+                if iris_id:
+                    obj = await db.get(Iris, iris_id)
+                    if obj:
+                        file_path = obj.file_path
+            if file_path:
+                read_tasks.append((item.candidate_no, modality, file_path))
+
+    # Phase 2: parallel bounded file reads
+    async def _bounded_read(path: str) -> bytes | None:
+        async with _PULL_SEM:
+            return await asyncio.to_thread(read_file, path)
+
+    results = await asyncio.gather(*[_bounded_read(fp) for _, _, fp in read_tasks])
+
+    # Phase 3: stream ZIP via SpooledTemporaryFile (spills to disk above 10 MB → no OOM)
+    tmp = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:
+        for (cno, modality, _), data in zip(read_tasks, results):
+            if data:
+                zf.writestr(f"{cno}/{modality}.jpg", data)
+    tmp.seek(0)
+
+    async def _stream():
+        try:
+            while chunk := await asyncio.to_thread(tmp.read, 65536):
+                yield chunk
+        finally:
+            tmp.close()
+
+    return StreamingResponse(_stream(), media_type="application/zip")
+
+
 # ── Add biometrics (sync_key auth, capture exams) ─────────────────────────────
 
 @router.post("/add-photo")
+@limiter.limit("500/minute")
 async def add_photo(
+    request: Request,
     shift_id: UUID = Form(...), center_id: UUID = Form(...),
     candidate_no: str = Form(...), file: UploadFile = File(...),
     exam: Exam = Depends(_exam_by_sync_key), db: AsyncSession = Depends(get_db)
 ):
     if exam.type != "capture":
         raise HTTPException(400, "Photo upload not allowed for non-capture exam")
+    if not exam.require_photo:
+        raise HTTPException(400, "Photo is not required for this exam")
 
     # Find seed row to copy identity from
     seed = await db.scalar(
@@ -373,13 +582,17 @@ async def add_photo(
 
 
 @router.post("/add-fingerprint")
+@limiter.limit("500/minute")
 async def add_fingerprint(
+    request: Request,
     shift_id: UUID = Form(...), center_id: UUID = Form(...),
     candidate_no: str = Form(...), file: UploadFile = File(...),
     exam: Exam = Depends(_exam_by_sync_key), db: AsyncSession = Depends(get_db)
 ):
     if exam.type != "capture":
         raise HTTPException(400, "Fingerprint upload not allowed for non-capture exam")
+    if not exam.require_fingerprint:
+        raise HTTPException(400, "Fingerprint is not required for this exam")
 
     center_code = await _get_center_code(db, center_id)
     raw = await file.read()
@@ -408,13 +621,17 @@ async def add_fingerprint(
 
 
 @router.post("/add-iris")
+@limiter.limit("500/minute")
 async def add_iris(
+    request: Request,
     shift_id: UUID = Form(...), center_id: UUID = Form(...),
     candidate_no: str = Form(...), file: UploadFile = File(...),
     exam: Exam = Depends(_exam_by_sync_key), db: AsyncSession = Depends(get_db)
 ):
     if exam.type != "capture":
         raise HTTPException(400, "Iris upload not allowed for non-capture exam")
+    if not exam.require_iris:
+        raise HTTPException(400, "Iris is not required for this exam")
 
     center_code = await _get_center_code(db, center_id)
     raw = await file.read()

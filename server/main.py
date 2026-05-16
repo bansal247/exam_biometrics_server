@@ -1,5 +1,6 @@
 """Exam Biometrics API Server."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,7 @@ from config import get_settings
 from database import engine
 from models import Base
 from routers import admin, supervisor, operator, load
+from routers.operator import _flush_heartbeats
 from utils.limiter import limiter
 from utils.matching import init_http_clients, close_http_clients
 
@@ -28,8 +30,15 @@ async def lifespan(app: FastAPI):
     init_http_clients()
     logging.info("HTTP clients ready")
 
+    flush_task = asyncio.create_task(_flush_heartbeats())
+
     yield
 
+    flush_task.cancel()
+    try:
+        await flush_task
+    except asyncio.CancelledError:
+        pass
     await close_http_clients()
     await engine.dispose()
 

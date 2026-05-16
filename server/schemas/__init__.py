@@ -73,6 +73,9 @@ class ExamCreate(BaseModel):
     name: str
     type: str = "capture"
     qr_string: Optional[str] = None
+    require_photo: bool = True
+    require_fingerprint: bool = False
+    require_iris: bool = False
     num_supervisors: int = Field(ge=1, le=10)
     num_operators: int = Field(ge=1, le=10)
     supervisor_phones: list[str]
@@ -82,6 +85,8 @@ class ExamCreate(BaseModel):
 
     @model_validator(mode="after")
     def check_list_lengths(self):
+        if not (self.require_photo or self.require_fingerprint or self.require_iris):
+            raise ValueError("At least one modality (photo, fingerprint, or iris) must be required")
         if len(self.supervisor_phones) != self.num_supervisors:
             raise ValueError(f"supervisor_phones must have exactly {self.num_supervisors} entries")
         if len(self.supervisor_passwords) != self.num_supervisors:
@@ -96,6 +101,18 @@ class ExamCreate(BaseModel):
 class ExamEdit(BaseModel):
     archived: Optional[bool] = None
     qr_string: Optional[str] = None
+    require_photo: Optional[bool] = None
+    require_fingerprint: Optional[bool] = None
+    require_iris: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def check_at_least_one_modality(self):
+        all_set = (self.require_photo is not None and
+                   self.require_fingerprint is not None and
+                   self.require_iris is not None)
+        if all_set and not (self.require_photo or self.require_fingerprint or self.require_iris):
+            raise ValueError("At least one modality must be required")
+        return self
 
 
 class ExamOut(BaseModel):
@@ -107,6 +124,11 @@ class ExamOut(BaseModel):
     archived: bool
     archived_at: Optional[datetime]
     sync_key: str
+    is_finalized: bool = False
+    finalized_at: Optional[datetime] = None
+    require_photo: bool = True
+    require_fingerprint: bool = False
+    require_iris: bool = False
     created_at: datetime
 
 

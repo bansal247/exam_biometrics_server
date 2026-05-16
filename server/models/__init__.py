@@ -34,6 +34,11 @@ class Exam(Base, TimestampMixin):
     archived_at = Column(DateTime, nullable=True)
     sync_key = Column(EncryptedString(512), nullable=False)
     sync_key_plain = Column(String(512), nullable=False, unique=True)
+    is_finalized = Column(Boolean, default=False, nullable=False, server_default="false")
+    finalized_at = Column(DateTime, nullable=True)
+    require_photo = Column(Boolean, default=True, nullable=False, server_default="true")
+    require_fingerprint = Column(Boolean, default=False, nullable=False, server_default="false")
+    require_iris = Column(Boolean, default=False, nullable=False, server_default="false")
     operators = relationship("Operator", back_populates="exam")
     supervisors = relationship("Supervisor", back_populates="exam")
 
