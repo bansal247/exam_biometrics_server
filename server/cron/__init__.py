@@ -52,7 +52,8 @@ async def match_pending_photos():
                 except Exception:
                     pass
 
-            await asyncio.gather(*[_process(*args) for args in tasks_args])
+            await asyncio.gather(*[_process(*args) for args in tasks_args],
+                                   return_exceptions=True)
             await db.commit()
             if tasks_args:
                 logger.info("%d face photo(s) matched", len(tasks_args))
@@ -73,19 +74,27 @@ async def extract_fingerprint_templates():
             rows = (await db.execute(
                 select(Fingerprint)
                 .where(Fingerprint.id.in_(ref_ids_q), Fingerprint.template.is_(None))
-                .limit(10)
+                .limit(32)
             )).scalars().all()
+            if not rows:
+                return
 
-            extracted = 0
-            for fp in rows:
-                data = await asyncio.to_thread(read_file, fp.file_path)
-                if not data:
-                    continue
-                tmpl = await extract_fingerprint_template(data)
-                if tmpl:
-                    fp.template = tmpl
-                    extracted += 1
+            async def _extract_fp(fp):
+                try:
+                    data = await asyncio.to_thread(read_file, fp.file_path)
+                    if not data:
+                        return
+                    tmpl = await extract_fingerprint_template(data)
+                    if tmpl:
+                        fp.template = tmpl
+                        return True
+                except Exception:
+                    pass
+                return False
 
+            results = await asyncio.gather(*[_extract_fp(fp) for fp in rows],
+                                           return_exceptions=True)
+            extracted = sum(1 for r in results if r is True)
             await db.commit()
             if extracted:
                 logger.info("%d fingerprint template(s) extracted", extracted)
@@ -106,19 +115,27 @@ async def extract_iris_templates():
             rows = (await db.execute(
                 select(Iris)
                 .where(Iris.id.in_(ref_ids_q), Iris.template.is_(None))
-                .limit(16)
+                .limit(32)
             )).scalars().all()
+            if not rows:
+                return
 
-            extracted = 0
-            for ir in rows:
-                data = await asyncio.to_thread(read_file, ir.file_path)
-                if not data:
-                    continue
-                tmpl = await extract_iris_template(data)
-                if tmpl:
-                    ir.template = tmpl
-                    extracted += 1
+            async def _extract_iris(ir):
+                try:
+                    data = await asyncio.to_thread(read_file, ir.file_path)
+                    if not data:
+                        return
+                    tmpl = await extract_iris_template(data)
+                    if tmpl:
+                        ir.template = tmpl
+                        return True
+                except Exception:
+                    pass
+                return False
 
+            results = await asyncio.gather(*[_extract_iris(ir) for ir in rows],
+                                           return_exceptions=True)
+            extracted = sum(1 for r in results if r is True)
             await db.commit()
             if extracted:
                 logger.info("%d iris template(s) extracted", extracted)
@@ -127,28 +144,35 @@ async def extract_iris_templates():
 
 
 async def compress_face_images():
-    """JPEG quality reduction for face photos. 30/run."""
+    """JPEG quality reduction for face photos. 60/run."""
     try:
         async with async_session() as db:
             rows = (await db.execute(
                 select(Photo)
                 .where(Photo.compressed_file_path.is_(None), Photo.file_path.isnot(None))
-                .limit(30)
+                .limit(60)
             )).scalars().all()
-            compressed = 0
-            for photo in rows:
-                raw = await asyncio.to_thread(read_file, photo.file_path)
-                if not raw:
-                    continue
+            if not rows:
+                return
+
+            async def _compress_face(photo):
                 try:
-                    data, _ = await asyncio.to_thread(lambda r=raw: compress_jpeg(r, quality=40))
+                    raw = await asyncio.to_thread(read_file, photo.file_path)
+                    if not raw:
+                        return
+                    data, _ = await asyncio.to_thread(compress_jpeg, raw, 40)
                     orig = Path(photo.file_path)
                     comp_path = str(orig.parent / f"{orig.stem}_compressed.jpg")
                     await asyncio.to_thread(Path(comp_path).write_bytes, data)
                     photo.compressed_file_path = comp_path
-                    compressed += 1
+                    return True
                 except Exception:
                     pass
+                return False
+
+            results = await asyncio.gather(*[_compress_face(p) for p in rows],
+                                           return_exceptions=True)
+            compressed = sum(1 for r in results if r is True)
             await db.commit()
             if compressed:
                 logger.info("%d face image(s) compressed", compressed)
@@ -157,28 +181,35 @@ async def compress_face_images():
 
 
 async def compress_fingerprint_images():
-    """BMP→JPG for fingerprints. 20/run, quality=50."""
+    """BMP→JPG for fingerprints. 40/run, quality=50."""
     try:
         async with async_session() as db:
             rows = (await db.execute(
                 select(Fingerprint)
                 .where(Fingerprint.compressed_file_path.is_(None), Fingerprint.file_path.isnot(None))
-                .limit(20)
+                .limit(40)
             )).scalars().all()
-            compressed = 0
-            for fp in rows:
-                raw = await asyncio.to_thread(read_file, fp.file_path)
-                if not raw:
-                    continue
+            if not rows:
+                return
+
+            async def _compress_fp(fp):
                 try:
-                    data, _ = await asyncio.to_thread(lambda r=raw: bmp_to_jpeg(r, quality=50))
+                    raw = await asyncio.to_thread(read_file, fp.file_path)
+                    if not raw:
+                        return
+                    data, _ = await asyncio.to_thread(bmp_to_jpeg, raw, 50)
                     orig = Path(fp.file_path)
                     comp_path = str(orig.parent / f"{orig.stem}_compressed.jpg")
                     await asyncio.to_thread(Path(comp_path).write_bytes, data)
                     fp.compressed_file_path = comp_path
-                    compressed += 1
+                    return True
                 except Exception:
                     pass
+                return False
+
+            results = await asyncio.gather(*[_compress_fp(fp) for fp in rows],
+                                           return_exceptions=True)
+            compressed = sum(1 for r in results if r is True)
             await db.commit()
             if compressed:
                 logger.info("%d fingerprint image(s) compressed", compressed)
@@ -187,28 +218,35 @@ async def compress_fingerprint_images():
 
 
 async def compress_iris_images():
-    """BMP→JPG for iris images. 20/run, quality=50."""
+    """BMP→JPG for iris images. 40/run, quality=50."""
     try:
         async with async_session() as db:
             rows = (await db.execute(
                 select(Iris)
                 .where(Iris.compressed_file_path.is_(None), Iris.file_path.isnot(None))
-                .limit(20)
+                .limit(40)
             )).scalars().all()
-            compressed = 0
-            for ir in rows:
-                raw = await asyncio.to_thread(read_file, ir.file_path)
-                if not raw:
-                    continue
+            if not rows:
+                return
+
+            async def _compress_iris(ir):
                 try:
-                    data, _ = await asyncio.to_thread(lambda r=raw: bmp_to_jpeg(r, quality=50))
+                    raw = await asyncio.to_thread(read_file, ir.file_path)
+                    if not raw:
+                        return
+                    data, _ = await asyncio.to_thread(bmp_to_jpeg, raw, 50)
                     orig = Path(ir.file_path)
                     comp_path = str(orig.parent / f"{orig.stem}_compressed.jpg")
                     await asyncio.to_thread(Path(comp_path).write_bytes, data)
                     ir.compressed_file_path = comp_path
-                    compressed += 1
+                    return True
                 except Exception:
                     pass
+                return False
+
+            results = await asyncio.gather(*[_compress_iris(ir) for ir in rows],
+                                           return_exceptions=True)
+            compressed = sum(1 for r in results if r is True)
             await db.commit()
             if compressed:
                 logger.info("%d iris image(s) compressed", compressed)

@@ -279,10 +279,20 @@ function renderUserFields() {
 async function createExam() {
   const ns = parseInt(document.getElementById("ex-nsup").value);
   const no = parseInt(document.getElementById("ex-nop").value);
+  const reqPhoto = document.getElementById("ex-req-photo").checked;
+  const reqFp    = document.getElementById("ex-req-fp").checked;
+  const reqIris  = document.getElementById("ex-req-iris").checked;
+  if (!reqPhoto && !reqFp && !reqIris) {
+    showMsg("msg-exam", "At least one modality (Photo, Fingerprint, or Iris) must be required.", false);
+    return;
+  }
   const payload = {
     name: document.getElementById("ex-name").value,
     type: document.getElementById("ex-type").value,
     qr_string: document.getElementById("ex-qr").value || null,
+    require_photo: reqPhoto,
+    require_fingerprint: reqFp,
+    require_iris: reqIris,
     num_supervisors: ns,
     num_operators: no,
     supervisor_phones: Array.from(
@@ -340,6 +350,18 @@ function renderEditExams() {
         <label style="font-size:.8rem;color:var(--muted)">Last captured QR data (from device)</label>
         <textarea readonly rows="2" style="width:100%;resize:vertical;font-size:.8rem;margin-top:.25rem">${e.qr_data || ""}</textarea>
       </div>
+      <div style="margin-top:.75rem; display:flex; gap:1rem; align-items:center; flex-wrap:wrap">
+        <label><input type="checkbox" id="req-photo-${e.id}" ${e.require_photo ? "checked" : ""}> Photo</label>
+        <label><input type="checkbox" id="req-fp-${e.id}" ${e.require_fingerprint ? "checked" : ""}> Fingerprint</label>
+        <label><input type="checkbox" id="req-iris-${e.id}" ${e.require_iris ? "checked" : ""}> Iris</label>
+        <button onclick="updateModalities('${e.id}')" style="flex:none; background:var(--sidebar-bg)">Save Modalities</button>
+      </div>
+      <div style="margin-top:.5rem">
+        ${e.is_finalized
+          ? `<span style="color:green; font-weight:600">&#10003; Finalized ${e.finalized_at ? new Date(e.finalized_at).toLocaleString() : ""}</span>`
+          : `<button onclick="finalizeExam('${e.id}')">Finalize Exam</button>`
+        }
+      </div>
     </div>
   `,
   ).join("");
@@ -372,6 +394,37 @@ async function updateQr(id) {
     alert("QR updated");
   } catch (e) {
     console.error("[updateQr] Failed:", e);
+    alert(e.message);
+  }
+}
+
+async function updateModalities(id) {
+  const photo = document.getElementById("req-photo-" + id).checked;
+  const fp    = document.getElementById("req-fp-"    + id).checked;
+  const iris  = document.getElementById("req-iris-"  + id).checked;
+  if (!photo && !fp && !iris) {
+    alert("At least one modality must be required.");
+    return;
+  }
+  try {
+    await api(`/admin/exams/${id}`, {
+      method: "PUT",
+      body: { require_photo: photo, require_fingerprint: fp, require_iris: iris },
+    });
+    alert("Modalities updated");
+    loadExamDropdowns();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function finalizeExam(id) {
+  if (!confirm("Finalize this exam? This will pre-generate candidate ZIPs for all center/shift combinations. Continue?")) return;
+  try {
+    const result = await api(`/admin/exams/${id}/finalize`, { method: "POST" });
+    alert(`Staging started for ${result.combos} center/shift combination(s).`);
+    loadExamDropdowns();
+  } catch (e) {
     alert(e.message);
   }
 }
@@ -1075,19 +1128,15 @@ async function loadMatchingTab(examId) {
   console.log("[loadMatchingTab] URL:", url);
   try {
     const data = await api(url);
-    console.log("[loadMatchingTab] Received", data.length, "records");
-    const matched = data.filter((d) => d.photo_match_status === "match").length;
-    const failed = data.filter(
-      (d) => d.photo_match_status === "mismatch",
-    ).length;
-    const pending = data.length - matched - failed;
-    document.getElementById("match-matched").textContent = matched;
-    document.getElementById("match-failed").textContent = failed;
-    document.getElementById("match-pending").textContent = pending;
+    const { stats, rows } = data;
+    console.log("[loadMatchingTab] Received stats:", stats, "mismatch rows:", rows.length);
+    document.getElementById("match-matched").textContent = stats.matched;
+    document.getElementById("match-failed").textContent = stats.failed;
+    document.getElementById("match-pending").textContent = stats.pending;
     drawPie("match-chart", [
-      { label: "Matched", value: matched, color: "#10b981" },
-      { label: "Failed", value: failed, color: "#ef4444" },
-      { label: "Pending", value: pending, color: "#f59e0b" },
+      { label: "Matched", value: stats.matched, color: "#10b981" },
+      { label: "Failed",  value: stats.failed,  color: "#ef4444" },
+      { label: "Pending", value: stats.pending, color: "#f59e0b" },
     ]);
     const exam = EXAMS.find((e) => e.id === examId);
     const isMatch = exam && exam.type === "match";
@@ -1095,11 +1144,7 @@ async function loadMatchingTab(examId) {
       isMatch
         ? "<th>No</th><th>Name</th><th>Attended</th><th>Ref Photo</th><th>Captured</th><th>Photo</th><th>Ref FP</th><th>Live FP</th><th>FP Match</th><th>Ref Iris</th><th>Live Iris</th><th>Iris Match</th><th>Center</th><th>Shift</th>"
         : "<th>No</th><th>Name</th><th>Attended</th><th>Ref Photo</th><th>Captured</th><th>Photo</th><th>Fingerprint</th><th>Iris</th><th>Center</th><th>Shift</th>";
-    const mismatches = data.filter((d) =>
-      d.photo_match_status === "mismatch" ||
-      (isMatch && (d.fingerprint_match_status === "mismatch" || d.iris_match_status === "mismatch"))
-    );
-    document.getElementById("match-body").innerHTML = mismatches
+    document.getElementById("match-body").innerHTML = rows
       .map(
         (d, i) => `<tr>
       <td>${i + 1}</td><td>${d.name}</td>
